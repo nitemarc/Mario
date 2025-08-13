@@ -1,10 +1,11 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
+  <link rel="manifest" href="./manifest.webmanifest">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no, maximum-scale=1" />
   <meta name="theme-color" content="#0f172a" />
-  <title>Mario – Mobile‑First PWA (no assets) v2</title>
+  <title>Mario – Mobile‑First PWA (no assets) v3</title>
   <style>
     :root{
       --bg:#0f172a; --fg:#e6edff; --panel:#111827; --muted:#90a4c7;
@@ -14,7 +15,7 @@
     html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font:500 14px/1.3 system-ui, -apple-system, Segoe UI, Roboto, Arial}
     body{display:grid;grid-template-rows:auto 1fr auto;gap:8px}
     header, footer{display:flex;align-items:center;justify-content:center;gap:14px;padding:8px 12px}
-    header{position:sticky;top:0;backdrop-filter:saturate(140%) blur(6px);background:linear-gradient( to bottom, rgba(15,23,42,.86), rgba(15,23,42,.60))}
+    header{position:sticky;top:0;z-index:10;backdrop-filter:saturate(140%) blur(6px);background:linear-gradient( to bottom, rgba(15,23,42,.86), rgba(15,23,42,.60))}
     footer{opacity:.8}
 
     #stageWrap{position:relative;display:grid;place-items:center;padding:0;touch-action:none}
@@ -37,6 +38,11 @@
     .kbd{opacity:.8;font-size:12px;color:var(--muted)}
     .rotHint{position:absolute;inset:0;display:none;place-items:center;background:rgba(0,0,0,.6)}
     .rotHint.show{display:grid}
+
+    /* Immersive fallback (for iOS/Safari w/o Fullscreen API) */
+    body.immersive header, body.immersive footer{display:none}
+    body.immersive #stageWrap{padding:0}
+    body.immersive canvas{max-width:100vw;max-height:100vh;border-radius:0}
   </style>
 </head>
 <body>
@@ -46,7 +52,7 @@
       <button class="btn" id="btnRestart" title="Restart (R)">↺ Restart</button>
       <button class="btn" id="btnFS" title="Pełny ekran">⛶ Pełny ekran</button>
     </div>
-    <div class="kbd">Sterowanie: ←/→ / A/D • Z/Space skok • X bieg • P pauza • R restart</div>
+    <div class="kbd">Sterowanie: ←/→ / A/D • Z/Spacja skok • X bieg • P pauza • R restart</div>
   </header>
 
   <main id="stageWrap">
@@ -73,23 +79,22 @@
 (() => {
   // ====== PWA registration ======
   if ('serviceWorker' in navigator) {
-    // Attempt to register a service worker file at root (required by SW spec)
-    navigator.serviceWorker.register('./sw.js').catch(()=>{/* no-op if not present */});
+    navigator.serviceWorker.register('./sw.js').catch(()=>{/* optional */});
   }
 
   // ====== Responsive canvas and DPR ======
-  const W0=432, H0=243; // logical base resolution (tile scale reference)
+  const W0=432, H0=243; // logical base resolution
   const canvas = document.getElementById('game');
   const ctx = canvas.getContext('2d');
   const off = document.createElement('canvas');
   const fx = off.getContext('2d');
 
   function fitCanvas(){
-    // Keep 16:9-ish while allowing flexible height on phones
     const maxW = Math.min(window.innerWidth, 1024);
     const maxH = Math.min(window.innerHeight - 160, 720);
     const scale = Math.max(1, Math.floor(Math.min(maxW/W0, maxH/H0)));
     off.width = W0; off.height = H0;
+    // DPR-aware drawing
     canvas.width = W0 * devicePixelRatio; canvas.height = H0 * devicePixelRatio;
     canvas.style.width = (W0*scale)+'px';
     canvas.style.height = (H0*scale)+'px';
@@ -98,23 +103,42 @@
   addEventListener('resize', fitCanvas, {passive:true});
   fitCanvas();
 
+  // ====== Fullscreen: robust toggle with immersive fallback ======
+  const btnFS = document.getElementById('btnFS');
+  btnFS.addEventListener('click', toggleFullscreen);
+
+  function toggleFullscreen(){
+    const el = document.documentElement;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+    const ex  = document.exitFullscreen || document.webkitExitFullscreen || document.msExitFullscreen;
+    const inFs = document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement;
+
+    if (req) {
+      if (!inFs) req.call(el).catch(()=>toggleImmersive());
+      else ex && ex.call(document);
+    } else {
+      toggleImmersive();
+    }
+  }
+  function toggleImmersive(){ document.body.classList.toggle('immersive'); fitCanvas(); }
+  document.addEventListener('fullscreenchange', fitCanvas);
+  document.addEventListener('webkitfullscreenchange', fitCanvas);
+
   // ====== Input (keyboard + touch) ======
   const held = new Set();
-  const pressed = new Set();
   const KEYMAP = {left:['arrowleft','a'], right:['arrowright','d'], jump:['z',' ','w'], run:['x'], pause:['p'], restart:['r']};
-  function is(k){ for(const code of KEYMAP[k]||[k]) if (held.has(code)) return true; return false; }
-  function onDown(e){ const k=e.key?.toLowerCase(); if(!k) return; if(Object.values(KEYMAP).flat().includes(k)){ e.preventDefault(); held.add(k); pressed.add(k);} }
-  function onUp(e){ const k=e.key?.toLowerCase(); if(!k) return; held.delete(k); }
-  addEventListener('keydown', onDown); addEventListener('keyup', onUp);
+  const is = (k)=> (KEYMAP[k]||[k]).some(code=>held.has(code));
+  addEventListener('keydown', e=>{ const k=e.key?.toLowerCase(); if(!k) return; if(Object.values(KEYMAP).flat().includes(k)){ e.preventDefault(); held.add(k);} });
+  addEventListener('keyup', e=>{ const k=e.key?.toLowerCase(); if(!k) return; held.delete(k); });
 
-  // Touch UI
+  // Touch gamepad
   const ui = document.getElementById('ui');
   const touchState = {left:false,right:false,jump:false,run:false};
   ui.querySelectorAll('.key').forEach(el=>{
     const role = el.dataset.k;
     const set = (v)=>{ if(role==='left') touchState.left=v; else if(role==='right') touchState.right=v; else if(role==='jump') touchState.jump=v; else if(role==='run') touchState.run=v; };
-    const start = (ev)=>{ ev.preventDefault(); el.classList.add('active'); set(true); };
-    const end   = (ev)=>{ ev.preventDefault(); el.classList.remove('active'); set(false); };
+    const start = (ev)=>{ ev.preventDefault(); set(true); };
+    const end   = (ev)=>{ ev.preventDefault(); set(false); };
     el.addEventListener('pointerdown', start, {passive:false});
     el.addEventListener('pointerup', end, {passive:false});
     el.addEventListener('pointercancel', end, {passive:false});
@@ -124,9 +148,8 @@
   // Buttons
   document.getElementById('btnPause').onclick = ()=> togglePause();
   document.getElementById('btnRestart').onclick = ()=> restart();
-  document.getElementById('btnFS').onclick = ()=> { const el=document.documentElement; if(!document.fullscreenElement){ el.requestFullscreen?.(); } else { document.exitFullscreen?.(); }}
 
-  // Visibility pause
+  // Auto-pause when tab hidden
   document.addEventListener('visibilitychange', ()=>{ if (document.hidden) paused=true; });
 
   // ====== Game constants (tuned for mobile) ======
@@ -170,7 +193,7 @@
   function tileAt(px,py){ if(px<0||py<0) return T.empty; const cx=(px/TILE|0),cy=(py/TILE|0); if (cy<0||cy>=ROWS||cx<0||cx>=COLS) return T.empty; return WORLD[cy][cx]; }
   function solidAtColRow(cx,cy){ const t=(cy<0||cy>=ROWS||cx<0||cx>=COLS)?T.empty:WORLD[cy][cx]; return t===T.ground||t===T.brick||t===T.used||t===T.pipeTL||t===T.pipeTR||t===T.pipeBL||t===T.pipeBR; }
   const solidAt=(x,y)=>solidAtColRow(x|0,y|0);
-  const oneWayAt=(cx,cy)=>WORLD[cy]?.[cx]===T.platform; const deadlyAt=(cx,cy)=>WORLD[cy]?.[cx]===T.deadly;
+  const deadlyAt=(cx,cy)=>WORLD[cy]?.[cx]===T.deadly;
   const aabb=(ax,ay,aw,ah,bx,by,bw,bh)=>ax<bx+bw && ax+aw>bx && ay<by+bh && ay+ah>by;
 
   // ====== HUD ======
@@ -210,7 +233,7 @@
   function update(){
     if(paused) return; tick++; if(tick%60===0 && !player.dead && !player.win) timeLeft=Math.max(0,timeLeft-1); if(timeLeft===0 && !player.dead && !player.win) die();
 
-    // resolve virtual inputs into held set
+    // map touchState to held keys
     function setHeld(flag, arr){ for(const k of arr) flag?held.add(k):held.delete(k); }
     setHeld(touchState.left, KEYMAP.left);
     setHeld(touchState.right, KEYMAP.right);
@@ -259,17 +282,24 @@
     for(const c of coins){ c.vy-=0.2; c.life--; c.y+=c.vy; }
     for(let i=coins.length-1;i>=0;i--) if(coins[i].life<=0) coins.splice(i,1);
 
-    const target = player.x - W0*0.4; camX += (Math.max(0, Math.min(levelW - W0, target)) - camX) * CAM_LERP;
+    const target = player.x - W0*0.4; camX += (Math.max(0, Math.min(levelW - W0, target)) - camX) * 0.2;
     HUD();
   }
 
   // ====== Render ======
-  function draw(){ fx.fillStyle=C.sky; fx.fillRect(0,0,W0,H0); fx.globalAlpha=.9; drawClouds(camX*.5); fx.globalAlpha=1; drawScenery();
+  function draw(){
+    fx.fillStyle=C.sky; fx.fillRect(0,0,W0,H0);
+    fx.globalAlpha=.9; drawClouds(camX*.5); fx.globalAlpha=1; drawScenery();
     const startCol=Math.max(0,(camX/TILE|0)), endCol=Math.min(COLS-1,(((camX+W0)/TILE|0)+1));
-    for(let y=0;y<ROWS;y++) for(let x=startCol;x<=endCol;x++){ const t=WORLD[y][x]; if(t===T.empty) continue; const sx=x*TILE-camX, sy=y*TILE; switch(t){ case T.ground: drawGround(sx,sy); break; case T.brick: drawBrick(sx,sy); break; case T.used: drawUsed(sx,sy); break; case T.qcoin: drawQuestion(sx,sy); break; case T.pipeTL: drawPipe(sx,sy,true,true); break; case T.pipeTR: drawPipe(sx,sy,false,true); break; case T.pipeBL: drawPipe(sx,sy,true,false); break; case T.pipeBR: drawPipe(sx,sy,false,false); break; case T.platform: drawPlatform(sx,sy); break; case T.flag: drawFlag(sx,sy); break; case T.deadly: drawLava(sx,sy); break; } }
+    for(let y=0;y<ROWS;y++) for(let x=startCol;x<=endCol;x++){
+      const t=WORLD[y][x]; if(t===T.empty) continue; const sx=x*TILE-camX, sy=y*TILE;
+      switch(t){ case T.ground: drawGround(sx,sy); break; case T.brick: drawBrick(sx,sy); break; case T.used: drawUsed(sx,sy); break; case T.qcoin: drawQuestion(sx,sy); break; case T.pipeTL: drawPipe(sx,sy,true,true); break; case T.pipeTR: drawPipe(sx,sy,false,true); break; case T.pipeBL: drawPipe(sx,sy,true,false); break; case T.pipeBR: drawPipe(sx,sy,false,false); break; case T.platform: drawPlatform(sx,sy); break; case T.flag: drawFlag(sx,sy); break; case T.deadly: drawLava(sx,sy); break; }
+    }
     for(const c of coins){ drawCoin(c.x-camX-4, c.y-4); }
     for(const e of enemies){ if(!onScreen(e.x,e.y)) continue; drawGoomba(e); }
-    drawPlayer(); ctx.drawImage(off,0,0);
+    drawPlayer();
+    // Blit scene to CSS-sized canvas (DPR handled by setTransform)
+    ctx.drawImage(off,0,0);
   }
 
   // ====== Draw helpers ======
@@ -287,7 +317,7 @@
   function drawClouds(px){ for(let i=0;i<6;i++){ const cx=((i*180 - (px%900)) + 900)%900 - 100; const cy=30 + (i%2)*20; fx.fillStyle=C.cloud; fx.fillRect(cx,cy,28,10); fx.fillRect(cx+4,cy-6,20,10);} }
   function drawScenery(){ for(let i=0;i<10;i++){ const hx=(i*160 - (camX*.8 % 1600)); fx.fillStyle=C.hill; fx.fillRect(hx, H0-30, 40, 30); fx.fillRect(hx+10, H0-40, 20, 40); const bx=(i*120 - (camX % 1200)); fx.fillStyle=C.bush; fx.fillRect(bx, H0-18, 36, 10); fx.fillRect(bx+6, H0-22, 24, 10);} }
 
-  // ====== Game loop (fixed step with accumulator) ======
+  // ====== Game loop (fixed step) ======
   let last=performance.now(), acc=0; const STEP=1000/60, MAX_STEPS=5;
   function loop(now){
     const dt=Math.min(120, now-last); last=now; acc+=dt;
